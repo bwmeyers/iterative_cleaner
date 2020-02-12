@@ -57,36 +57,38 @@ def set_weights_archive(archive, test_results):
 
 
 def channel_scaler(array2d):
-    """For each channel scale it.
-    """
+    """For each channel scale it by the median absolute deviation"""
     scaled = np.empty_like(array2d)
     nchans = array2d.shape[1]
+
     for ichan in np.arange(nchans):
         with np.errstate(invalid='ignore', divide='ignore'):
             channel = array2d[:, ichan]
             median = np.ma.median(channel)
             channel_rescaled = channel - median
             mad = np.ma.median(np.abs(channel_rescaled))
-            scaled[:, ichan] = (channel_rescaled) / mad
+            scaled[:, ichan] = channel_rescaled / mad
+
     return scaled
 
 
 def subint_scaler(array2d):
-    """For each sub-int scale it.
-    """
+    """For each sub-int scale it by the median absolute deviation"""
     scaled = np.empty_like(array2d)
     nsubs = array2d.shape[0]
+
     for isub in np.arange(nsubs):
         with np.errstate(invalid='ignore', divide='ignore'):
             subint = array2d[isub, :]
             median = np.ma.median(subint)
             subint_rescaled = subint - median
             mad = np.ma.median(np.abs(subint_rescaled))
-            scaled[isub, :] = (subint_rescaled) / mad
+            scaled[isub, :] = subint_rescaled / mad
+
     return scaled
 
 
-def find_bad_parts(archive, args):
+def find_bad_parts(archive, bad_subint_frac=1, bad_chan_frac=1):
     """Checks whether whole channels or subints should be removed
     """
     weights = archive.get_weights()
@@ -97,7 +99,7 @@ def find_bad_parts(archive, args):
 
     for i in range(n_subints):
         bad_frac = 1 - np.count_nonzero(weights[i, :]) / float(n_channels)
-        if bad_frac > args.bad_subint:
+        if bad_frac > bad_subint_frac:
             for j in range(n_channels):
                 integ = archive.get_Integration(int(i))
                 integ.set_weight(int(j), 0.0)
@@ -105,13 +107,13 @@ def find_bad_parts(archive, args):
 
     for j in range(n_channels):
         bad_frac = 1 - np.count_nonzero(weights[:, j]) / float(n_subints)
-        if bad_frac > args.bad_chan:
+        if bad_frac > bad_chan_frac:
             for i in range(n_subints):
                 integ = archive.get_Integration(int(i))
                 integ.set_weight(int(j), 0.0)
             n_bad_channels += 1
 
-    if not args.quiet and n_bad_channels + n_bad_subints != 0:
+    if n_bad_channels + n_bad_subints != 0:
         print("Removed %s bad subintegrations and %s bad channels." % (n_bad_subints, n_bad_channels))
 
     return archive
