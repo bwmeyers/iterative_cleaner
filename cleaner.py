@@ -13,28 +13,43 @@ from utils import (remove_profile_inplace,
                    find_bad_parts)
 
 
-def clean(ar, args, arch):
+def clean(arch, template=None, memory=False, pscrunch=True, max_iter=10, pulse_region=[0, 1, 1], unload_res=True,
+          chanthresh=5, subintthresh=5, bad_chan_frac=1, bad_subint_frac=1, plot_zap=True, log=True):
+    ar = psrchive.Archive_load(arch)
+
+    mjd = (float(ar.start_time().strtempo()) + float(ar.end_time().strtempo())) / 2.0
+    name = ar.get_source()
+    cent_freq = ar.get_centre_frequency()
+
+    print("Loaded archive {0}...".format(arch))
+    print("Source name: {0}".format(name))
+    print("Centre frequency: {0:.3f} MHz".format(cent_freq))
+    print("MJD of mid-point: {0}".format(mjd))
+
     orig_weights = ar.get_weights()
-    if args.memory and not args.pscrunch:
+    if memory and not pscrunch:
         pass
     else:
         ar.pscrunch()
+
     patient = ar.clone()
     ar_name = ar.get_filename().split()[-1]
     x = 0
-    max_iterations = args.max_iter
-    pulse_region = args.pulse_region
+    max_iterations = max_iter
+    pulse_region = pulse_region
 
     # Create list that is used to end the iteration
     test_weights = []
     test_weights.append(patient.get_weights())
     profile_number = orig_weights.size
-    if not args.quiet:
-        print("Total number of profiles: %s" % profile_number)
+
+
+    print("Total number of profiles: %s" % profile_number)
+    loops = 0
     while x < max_iterations:
         x += 1
-        if not args.quiet:
-            print("Loop: %s" % x)
+
+        print("Loop: %s" % x)
 
         # Prepare the data for template creation
         patient.pscrunch()  # pscrunching again is not necessary if already pscrunched but prevents a bug
@@ -42,19 +57,22 @@ def clean(ar, args, arch):
         patient.dedisperse()
         patient.fscrunch()
         patient.tscrunch()
-        template = patient.get_Profile(0, 0, 0).get_amps() * 10000
+
+        if template is None:
+            template = patient.get_Profile(0, 0, 0).get_amps() * 10000
 
         # Reset patient
         patient = ar.clone()
         patient.pscrunch()
         patient.remove_baseline()
         patient.dedisperse()
+
         remove_profile_inplace(patient, template, pulse_region)
 
         # re-set DM to 0
         patient.dededisperse()
 
-        if args.unload_res:
+        if unload_res:
             residual = patient.clone()
 
         # Get data (select first polarization - recall we already P-scrunched)
@@ -67,7 +85,7 @@ def clean(ar, args, arch):
         data = np.ma.masked_array(data, mask=mask_3d)
 
         # RFI-ectomy must be recommended by average of tests
-        avg_test_results = comprehensive_stats(data, args, axis=2)
+        avg_test_results = comprehensive_stats(data, cthresh=chanthresh, sthresh=subintthresh)
 
         # Reset patient and set weights in patient
         del patient
@@ -80,54 +98,61 @@ def clean(ar, args, arch):
         rfi_frac = (new_weights.size - np.count_nonzero(new_weights)) / float(new_weights.size)
 
         # Print the changes to the previous loop to help in choosing a suitable max_iter
-        if not args.quiet:
-            print("Differences to previous weights: %s  RFI fraction: %s" % (diff_weigths, rfi_frac))
+        print("Differences to previous weights: %s  RFI fraction: %s" % (diff_weigths, rfi_frac))
         for old_weights in test_weights:
             if np.all(new_weights == old_weights):
-                if not args.quiet:
-                    print("RFI removal stops after %s loops." % x)
+                print("RFI removal stops after %s loops." % x)
                 loops = x
                 x = 1000000
         test_weights.append(new_weights)
 
     if x == max_iterations:
-        if not args.quiet:
-            print("Cleaning was interrupted after the maximum amount of loops (%s)" % max_iterations)
+        print("Cleaning was interrupted after the maximum amount of loops (%s)" % max_iterations)
         loops = max_iterations
 
     # Reload archive if it is not supposed to be pscrunched.
-    if not args.pscrunch and not args.memory:
+    if not pscrunch and not memory:
         ar = psrchive.Archive_load(arch)
 
     # Set weights in archive.
     set_weights_archive(ar, avg_test_results)
 
     # Test if whole channel or subints should be removed
-    if args.bad_chan != 1 or args.bad_subint != 1:
-        ar = find_bad_parts(ar, args)
+    if bad_chan_frac != 1 or bad_subint_frac != 1:
+        ar = find_bad_parts(ar, bad_subint_frac=bad_subint_frac, bad_chan_frac=bad_chan_frac)
 
     # Unload residual if needed
-    if args.unload_res:
+    if unload_res:
         residual.unload("%s_residual_%s.ar" % (ar_name, loops))
 
     # Create plot that shows zapped( red) and unzapped( blue) profiles if needed
-    if args.print_zap:
+    if plot_zap:
         plt.imshow(avg_test_results.T, vmin=0.999, vmax=1.001, aspect='auto',
                    interpolation='nearest', cmap=cm.coolwarm)
         plt.gca().invert_yaxis()
-        plt.title("%s cthresh=%s sthresh=%s" % (ar_name, args.chanthresh, args.subintthresh))
-        plt.savefig("%s_%s_%s.png" % (ar_name, args.chanthresh,
-                                      args.subintthresh), bbox_inches='tight')
+        plt.title("%s cthresh=%s sthresh=%s" % (ar_name, chanthresh, subintthresh))
+        plt.savefig("%s_%s_%s.png" % (ar_name, chanthresh, subintthresh), bbox_inches='tight')
 
     # Create log that contains the used parameters
-    if not args.no_log:
-        with open("clean.log", "a") as myfile:
-            myfile.write("\n %s: Cleaned %s with %s, required loops=%s"
-                         % (datetime.datetime.now(), ar_name, args, loops))
+    #TODO: replace this and all output with logging module
+    if log:
+        with open("clean.log", "w+") as logfile:
+            logfile.write(
+                """%s: Cleaned %s
+                        required loops=%s
+                        channel threshold=%f
+                        subint threshold=%f
+                        bad channel fraction threshold=%f
+                        bad subint fraction threshold=%f
+                        on-pulse region (start, end, scale_factor)=%s\n\n
+                """ % (datetime.datetime.now(), ar_name, loops,
+                       chanthresh, subintthresh, bad_chan_frac, bad_subint_frac,
+                       pulse_region))
+
     return ar
 
 
-def comprehensive_stats(data, args):
+def comprehensive_stats(data, cthresh=5, sthresh=5):
     """The comprehensive scaled stats that are used for
         the "Surgical Scrub" cleaning strategy.
 
@@ -150,8 +175,6 @@ def comprehensive_stats(data, args):
         Output:
             stats: A 2-D numpy array of stats.
     """
-    chanthresh = args.chanthresh
-    subintthresh = args.subintthresh
 
     # NOTE: This is the important part which defines what kind of statistical/measured quantities are used to decide
     # whether some channel is corrupted. We can add/modify/remove any or all of these.
@@ -172,8 +195,8 @@ def comprehensive_stats(data, args):
     # Now step through data and identify bad profiles
     scaled_diagnostics = []
     for diag in diagnostics:
-        chan_scaled = np.abs(channel_scaler(diag)) / chanthresh
-        subint_scaled = np.abs(subint_scaler(diag)) / subintthresh
+        chan_scaled = np.abs(channel_scaler(diag)) / cthresh
+        subint_scaled = np.abs(subint_scaler(diag)) / sthresh
         scaled_diagnostics.append(np.max((chan_scaled, subint_scaled), axis=0))
 
     test_results = np.median(scaled_diagnostics, axis=0)  # we could be more extreme and take the min/max
