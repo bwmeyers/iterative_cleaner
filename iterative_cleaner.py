@@ -31,9 +31,6 @@ if __name__ == "__main__":
     parser.add_argument('-r', '--pulse_region', nargs=3, type=float, default=[0.0, 1.0, 1.0],
                         metavar=('pulse_start', 'pulse_end', 'scaling_factor'),
                         help="Defines the range of the pulse and a suppression factor.")
-    parser.add_argument('-o', '--output', type=str, default=None, metavar='output_filename',
-                        help="Name of the output file. "
-                             "Default is to write a new file with '_cleaned.ar' as the suffix.")
     parser.add_argument('--memory', action='store_true',
                         help='Do not pscrunch the archive while it is in memory. '
                              'Costs RAM but prevents having to reload the archive.')
@@ -47,11 +44,12 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Loop over each of the provided archives
-    for arch in args.archive:
-        if args.output is None:
-            args.output = "{0}_clean.ar".format(arch.rsplit('.', 1)[0])
+    # This is terribly gross, but I'm trying to make the clean function agnostic...
+    arch_list = args.__dict__.pop('archive')
+    kwargs = args.__dict__.copy()
+    for arch in arch_list:
+        output = "{0}_clean.ar".format(arch.rsplit('.', 1)[0])
 
-        cleaned_archive = clean(arch, args.__dict__)
-        cleaned_archive.unload(args.output)
+        cleaned_archive = clean(arch, output=output, **kwargs)
 
-        print("Cleaned archive: %s" % args.output)
+        print("Cleaned archive: %s" % output)
