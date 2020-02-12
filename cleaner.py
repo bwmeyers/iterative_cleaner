@@ -13,15 +13,21 @@ from utils import (remove_profile_inplace,
                    find_bad_parts)
 
 
-def clean(arch, template=None, memory=False, pscrunch=True, max_iter=10, pulse_region=[0, 1, 1], unload_res=True,
-          chanthresh=5, subintthresh=5, bad_chan_frac=1, bad_subint_frac=1, plot_zap=True, log=True):
-    ar = psrchive.Archive_load(arch)
+def clean(archive, template=None, output="cleaned.ar", memory=False, pscrunch=True, max_iter=10,
+          pulse_region=[0, 1, 1], unload_res=True, chanthresh=5, subintthresh=5, bad_chan_frac=1, bad_subint_frac=1,
+          plot_zap=True, log=True):
+
+    if archive is None:
+        print("No archive provided")
+        return
+
+    ar = psrchive.Archive_load(str(archive))
 
     mjd = (float(ar.start_time().strtempo()) + float(ar.end_time().strtempo())) / 2.0
     name = ar.get_source()
     cent_freq = ar.get_centre_frequency()
 
-    print("Loaded archive {0}...".format(arch))
+    print("Loaded archive {0}...".format(str(archive)))
     print("Source name: {0}".format(name))
     print("Centre frequency: {0:.3f} MHz".format(cent_freq))
     print("MJD of mid-point: {0}".format(mjd))
@@ -112,7 +118,7 @@ def clean(arch, template=None, memory=False, pscrunch=True, max_iter=10, pulse_r
 
     # Reload archive if it is not supposed to be pscrunched.
     if not pscrunch and not memory:
-        ar = psrchive.Archive_load(arch)
+        ar = psrchive.Archive_load(str(archive))
 
     # Set weights in archive.
     set_weights_archive(ar, avg_test_results)
@@ -128,7 +134,7 @@ def clean(arch, template=None, memory=False, pscrunch=True, max_iter=10, pulse_r
     # Create plot that shows zapped( red) and unzapped( blue) profiles if needed
     if plot_zap:
         plt.imshow(avg_test_results.T, vmin=0.999, vmax=1.001, aspect='auto',
-                   interpolation='nearest', cmap=cm.coolwarm)
+                   interpolation='none', cmap=cm.coolwarm)
         plt.gca().invert_yaxis()
         plt.title("%s cthresh=%s sthresh=%s" % (ar_name, chanthresh, subintthresh))
         plt.savefig("%s_%s_%s.png" % (ar_name, chanthresh, subintthresh), bbox_inches='tight')
@@ -148,6 +154,8 @@ def clean(arch, template=None, memory=False, pscrunch=True, max_iter=10, pulse_r
                 """ % (datetime.datetime.now(), ar_name, loops,
                        chanthresh, subintthresh, bad_chan_frac, bad_subint_frac,
                        pulse_region))
+
+    ar.unload(str(output))
 
     return ar
 
@@ -200,6 +208,7 @@ def comprehensive_stats(data, cthresh=5, sthresh=5):
         scaled_diagnostics.append(np.max((chan_scaled, subint_scaled), axis=0))
 
     test_results = np.median(scaled_diagnostics, axis=0)  # we could be more extreme and take the min/max
+    test_results = np.nan_to_num(test_results, posinf=10, neginf=10, nan=10)  # replace any NaNs or infinities with >1
 
     return test_results
 
