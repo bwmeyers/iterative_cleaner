@@ -4,12 +4,15 @@ import numpy as np
 from scipy.optimize import least_squares
 
 
+def subtract_scaled_template(amp, temp, prof):
+    return amp * temp - prof
+
+
 def remove_profile1d(prof, isub, ichan, template, pulse_region):
     """Given a specific profile and template, attempt to subtract a scaled version of the template from the data such
     that we are left only with the nominal baseline."""
-    err = lambda amp: amp * template - prof
-    result = least_squares(err, [1.0], method='lm')
-    residuals = np.asarray(err(result.x))
+    result = least_squares(subtract_scaled_template, [1.0], args=(template, prof), method='lm')
+    residuals = np.asarray(subtract_scaled_template(result.x, template, prof))
 
     if pulse_region != [0, 1, 1]:
         p_start = int(pulse_region[1])
