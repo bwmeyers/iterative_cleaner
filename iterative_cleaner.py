@@ -12,6 +12,9 @@ from cleaner import clean
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Commands for the cleaner')
     parser.add_argument('archive', nargs='+', type=str, help='The chosen archive(s)')
+    parser.add_argument('-t', '--template', type=str, default=None,
+                        help="Template file. If the input is 'data', then the template will be constructed iteratively "
+                             "from the data after each cleaning step.")
     parser.add_argument('-c', '--chanthresh', type=float, default=5, metavar='channel_threshold',
                         help='The threshold (in number of sigmas) a '
                              'profile needs to stand out compared to '
