@@ -4,6 +4,36 @@ import numpy as np
 from scipy.optimize import least_squares
 
 
+def fft_rotate(data, bins):
+    """
+    Return data rotated by 'bins' places to the left.
+    The rotation is done in the Fourier domain using the Shift Theorem.
+
+        Inputs:
+            data: A 1-D numpy array to rotate.
+            bins: The (possibly fractional) number of bins to rotate by.
+        Outputs:
+            rotated: The rotated data.
+    """
+    freqs = np.arange(data.size // 2 + 1, dtype=np.float)
+    phasor = np.exp(complex(0.0, 2.0 * np.pi) * freqs * bins / float(data.size))
+
+    return np.fft.irfft(phasor * np.fft.rfft(data))
+
+
+def subtract_scaled_rotated_template(params, temp, prof):
+    amp, off = params
+    return amp * fft_rotate(temp, off) - prof
+
+
+def get_template_profile_phase(template, prof, amp_guess=1.0, phase_guess=0.0):
+    """ Given a template and profile, estimate the phase offset between the two"""
+    result = least_squares(subtract_scaled_rotated_template, [amp_guess, phase_guess], args=(template, prof), method='lm')
+    best_amp, best_phase = result.x
+
+    return best_amp, best_phase
+
+
 def subtract_scaled_template(amp, temp, prof):
     return amp * temp - prof
 
@@ -29,11 +59,16 @@ def remove_profile1d(prof, isub, ichan, template, pulse_region):
 def remove_profile_inplace(ar, template, pulse_region):
     """Remove the template profile from the individual data profiles."""
     data = ar.get_data()[:, 0, :, :]  # Select first polarization channel
-    # archive is P-scrunched, so this is
-    # total intensity, the only polarization
-    # channel
-    for isub, ichan in np.ndindex(ar.get_nsubint(), ar.get_nchan()):
-        amps = remove_profile1d(data[isub, ichan], isub, ichan, template, pulse_region)[1]
+    # archive is P-scrunched, so this is total intensity
+    nchan = ar.get_nchan()
+    nsub = ar.get_nsubint()
+
+    for isub, ichan in np.ndindex(nsub, nchan):
+        if len(template.shape) > 1:
+            amps = remove_profile1d(data[isub, ichan], isub, ichan, template[ichan], pulse_region)[1]
+        else:
+            amps = remove_profile1d(data[isub, ichan], isub, ichan, template, pulse_region)[1]
+
         prof = ar.get_Profile(isub, 0, ichan)
         if amps is None:
             prof.set_weight(0)
