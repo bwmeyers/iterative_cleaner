@@ -5,6 +5,7 @@ import psrchive
 
 import numpy as np
 import matplotlib.pyplot as plt
+from scipy.signal import savgol_filter
 
 from utils import (remove_profile_inplace,
                    apply_weights, set_weights_archive,
@@ -13,15 +14,20 @@ from utils import (remove_profile_inplace,
 
 
 def clean(archive, template="data", output="cleaned.ar", memory=False, pscrunch=True, max_iter=10,
-          pulse_region=[0, 1, 1], unload_res=True, chanthresh=5, subintthresh=5, bad_chan_frac=1, bad_subint_frac=1,
+          pulse_region=None, unload_res=True, chanthresh=5, subintthresh=5, bad_chan_frac=1, bad_subint_frac=1,
           plot_zap=True, log=True):
 
+    if pulse_region is None:
+        pulse_region = [None, None]
     if archive is None:
         print("No archive provided")
         return
 
     ar = psrchive.Archive_load(str(archive))
-
+    ar_name = ar.get_filename().split()[-1]
+    patient_nchan = ar.get_nchan()
+    patient_nsub = ar.get_nsubint()
+    patient_nbin = ar.get_nbin()
     mjd = (float(ar.start_time().strtempo()) + float(ar.end_time().strtempo())) / 2.0
     name = ar.get_source()
     cent_freq = ar.get_centre_frequency()
@@ -32,18 +38,57 @@ def clean(archive, template="data", output="cleaned.ar", memory=False, pscrunch=
     print("MJD of mid-point: {0}".format(mjd))
 
     orig_weights = ar.get_weights()
+    orig_weights_mask = np.bitwise_not(np.expand_dims(orig_weights, 2).astype(bool))
+
+    if plot_zap:
+        print("Plotting results of cleaning process")
+        fig, (axW, axF, axS) = plt.subplots(nrows=3, gridspec_kw={'height_ratios': [1, 0.3, 0.3]},
+                                            figsize=(8, 14))
+        # plot 2D representation of weights
+        weights = orig_weights_mask.T.squeeze().astype(bool).astype(float)
+        axW.imshow(weights, aspect='auto', interpolation='none', cmap=plt.get_cmap('coolwarm'))
+        axW.invert_yaxis()
+        axW.set_title("%s original weights" % (ar_name))
+        axW.set_xlabel("Subintegration index")
+        axW.set_ylabel("Channel index")
+
+        frac_flagged_chan = np.sum(weights, axis=1) / float(patient_nsub)
+        frac_flagged_sub = np.sum(weights, axis=0) / float(patient_nchan)
+
+        # plot fraction of subints with particular channel flagged
+        axF.scatter(np.arange(patient_nchan), frac_flagged_chan, marker="x")
+        axF.set_xlabel("Channel index")
+        axF.set_ylabel("frac. flagged")
+        axF.set_ylim(-0.05, 1.05)
+
+        # plot fraction of channels with particular subint flagged
+        axS.scatter(np.arange(patient_nsub), frac_flagged_sub, marker="x")
+        axS.set_xlabel("Subintegration index")
+        axS.set_ylabel("frac. flagged")
+        axS.set_ylim(-0.05, 1.05)
+
+        plt.savefig("{0}_orig_weights.png".format(ar_name.rsplit('.', 1)[0]), bbox_inches="tight")
+        plt.close(fig)
+
     if memory and not pscrunch:
         pass
     else:
         ar.pscrunch()
 
     patient = ar.clone()
-    patient_nchan = patient.get_nchan()
-    patient_nsub  = patient.get_nsubint()
-    ar_name = ar.get_filename().split()[-1]
+
+    # construct a slice object from the given pulse_region
+    pulse_region_slc = slice(*[int(x * patient_nbin) if (x is not None) else None for x in pulse_region])
+
+    mask_3d = orig_weights_mask.repeat(patient_nbin, axis=2)
+    if pulse_region_slc != slice(None, None):
+        print("masked on-pulse region")
+        mask_3d[..., pulse_region_slc] = True
+
     x = 0
     max_iterations = max_iter
-    pulse_region = pulse_region
+
+    print("On-pulse region provided (bins) = {0}".format(pulse_region_slc))
 
     # Create list that is used to end the iteration
     test_weights = []
@@ -52,7 +97,9 @@ def clean(archive, template="data", output="cleaned.ar", memory=False, pscrunch=
 
     # Try to load template and ensure it will work with the data (i.e. has the same number of channels)
     template_from_file = False
+    offset = 0
     if template is not None and template != "data":
+        print("Loading template from {0}".format(template))
         template_from_file = True
         # Assuming the template is an archive, too
         temp = psrchive.Archive_load(str(template))
@@ -62,7 +109,10 @@ def clean(archive, template="data", output="cleaned.ar", memory=False, pscrunch=
         temp.tscrunch()
 
         temp_nchan = len(temp.get_frequencies())
-        if temp_nchan != patient_nchan:
+        if temp_nchan == 1:
+            print("Template is 1D")
+        elif temp_nchan != patient_nchan and temp_nchan > 1:
+            print("Template is 2D, but...")
             print("Number of channels in template ({0}) doesn't match data ({1})... f-scrunching to 1D!".format(
                 temp_nchan, patient_nchan))
             temp.fscrunch()
@@ -80,22 +130,25 @@ def clean(archive, template="data", output="cleaned.ar", memory=False, pscrunch=
         temp_phs = temp.clone()
         temp_phs.fscrunch()
         temp_phs = np.apply_over_axes(np.sum, temp_phs.get_data(), (0, 1)).squeeze()
-        amp_guess = max(profile) - min(profile) - max(temp_phs)
-        phase_guess = -np.argmax(profile) + np.argmax(temp_phs)
+        amp_guess = np.abs(max(profile) - max(temp_phs))
+        phase_guess = -np.argmax(temp_phs) + np.argmax(profile)
         amp, offset = get_template_profile_phase(temp_phs, profile, amp_guess=amp_guess, phase_guess=phase_guess)
         print("template phase offset = {0} bins".format(offset))
         temp = np.squeeze(temp.get_data()[0, 0, :, :])
     elif template == "data":
         # Create an initial template from the data if one is not provided
+        # TODO: This doesn't actually make sense, since all that will end up happening is subtraction of a scaled
+        #       version of the data, which doesn't even leave you with real residuals...
+        #       the template has to be smooth and have constant baseline (for each channel at least)
         print("No template file provided, will iteratively create one from data")
         patient.pscrunch()
         patient.remove_baseline()
         patient.dedisperse()
         patient.fscrunch()
         patient.tscrunch()
-        temp = patient.get_Profile(0, 0, 0).get_amps() * 10000
+        temp = savgol_filter(patient.get_Profile(0, 0, 0).get_amps(), 11, 3)
+        temp = temp / temp.max()
         temp_nchan = 1
-        offset = 0
         # No need to phase align here since it's created from the data
     else:
         print("No template provided, will not attempt to remove pulse profile from data")
@@ -118,7 +171,7 @@ def clean(archive, template="data", output="cleaned.ar", memory=False, pscrunch=
         if temp_nchan > 1 and template_from_file:
             # 2D template, needs to be rotated
             print("rotating 2D template")
-            rotated_template = np.apply_along_axis(fft_rotate, 1, temp, args=(offset))
+            rotated_template = np.apply_along_axis(fft_rotate, 0, temp, offset)
         elif temp_nchan == 1 and template_from_file:
             # 1D template, needs to be rotated
             print("rotating 1D template")
@@ -128,6 +181,7 @@ def clean(archive, template="data", output="cleaned.ar", memory=False, pscrunch=
             rotated_template = temp
 
         if rotated_template is not None:
+            print("extracting scaled template from data")
             remove_profile_inplace(patient, rotated_template, pulse_region)
 
         # re-set DM to 0
@@ -137,29 +191,29 @@ def clean(archive, template="data", output="cleaned.ar", memory=False, pscrunch=
             residual = patient.clone()
 
         # Get data (select first polarization - recall we already P-scrunched)
+        print("Getting archive weights and masking data")
         data = patient.get_data()[:, 0, :, :]
-        data = apply_weights(data, orig_weights)
-
-        # Mask profiles where weight is 0
-        mask_2d = np.bitwise_not(np.expand_dims(orig_weights, 2).astype(bool))
-        mask_3d = mask_2d.repeat(ar.get_nbin(), axis=2)
+        # data = apply_weights(data, orig_weights)  # No point apply weights and then just masking the array
         data = np.ma.masked_array(data, mask=mask_3d)
 
+
         # RFI-ectomy must be recommended by average of tests
+        print("Computing comprehensive statistics on channel/subint basis")
         avg_test_results = comprehensive_stats(data, cthresh=chanthresh, sthresh=subintthresh)
 
         # Reset patient and set weights in patient
         del patient
         patient = ar.clone()
+        print("Zapping data in working copy...")
         set_weights_archive(patient, avg_test_results)
 
         # Test whether weights were already used in a previous iteration
         new_weights = patient.get_weights()
-        diff_weigths = np.sum(new_weights != test_weights[-1])
+        diff_weights = np.sum(new_weights != test_weights[-1])
         rfi_frac = (new_weights.size - np.count_nonzero(new_weights)) / float(new_weights.size)
 
         # Print the changes to the previous loop to help in choosing a suitable max_iter
-        print("Differences to previous weights: %s  RFI fraction: %s" % (diff_weigths, rfi_frac))
+        print("Differences to previous weights: %s  RFI fraction: %s" % (diff_weights, rfi_frac))
         for old_weights in test_weights:
             if np.all(new_weights == old_weights):
                 print("RFI removal stops after %s loops." % x)
@@ -167,7 +221,7 @@ def clean(archive, template="data", output="cleaned.ar", memory=False, pscrunch=
                 x = 1000000
         test_weights.append(new_weights)
 
-        if template is None:
+        if template == "data":
             # We need to recreate the template from the data if it was never defined in the first place
             # This makes sure that each iteration will have a better template than before
             print("Re-creating template from this iteration's cleaned data")
@@ -176,7 +230,8 @@ def clean(archive, template="data", output="cleaned.ar", memory=False, pscrunch=
             patient.dedisperse()
             patient.fscrunch()
             patient.tscrunch()
-            temp = patient.get_Profile(0, 0, 0).get_amps() * 10000
+            temp = savgol_filter(patient.get_Profile(0, 0, 0).get_amps(), 11, 3)
+            temp = temp / temp.max()
             # No need to phase align since it's created from the data
 
     if x == max_iterations:
@@ -185,27 +240,33 @@ def clean(archive, template="data", output="cleaned.ar", memory=False, pscrunch=
 
     # Reload archive if it is not supposed to be pscrunched.
     if not pscrunch and not memory:
+        print("Reloading full poln. archive")
         ar = psrchive.Archive_load(str(archive))
 
-    # Set weights in archive.
+    # Set weights in archive
+    print("Updating weights in final archive")
     set_weights_archive(ar, avg_test_results)
 
     # Test if whole channel or subints should be removed
     if bad_chan_frac != 1 or bad_subint_frac != 1:
+        print("Masking addition data based on bad channel/subint fraction thresholds")
         ar = find_bad_parts(ar, bad_subint_frac=bad_subint_frac, bad_chan_frac=bad_chan_frac)
 
     # Unload residual if needed
     if unload_res:
+        print("Unloading residual archive")
         residual.unload("{0}_residual_{1}loops.ar".format(ar_name.rsplit('.', 1)[0], loops))
 
     # Create diagnostic plot showing weights and fraction channels/subints flagged
     if plot_zap:
+        print("Plotting results of cleaning process")
         fig, (axW, axF, axS) = plt.subplots(nrows=3, gridspec_kw={'height_ratios': [1, 0.3, 0.3]},
                                             figsize=(8, 14))
-
         # plot 2D representation of weights
         weights = np.invert(ar.get_weights().T.astype(bool)).astype(float)
-        axW.imshow(weights, aspect='auto', interpolation='none', cmap=plt.get_cmap('coolwarm'))
+        # mask the originally zero-weighted data so we can easily see the difference
+        axW.imshow(np.ma.masked_array(weights, mask=orig_weights_mask.T), aspect='auto', interpolation='none',
+                   cmap=plt.get_cmap('coolwarm'))
         axW.invert_yaxis()
         axW.set_title("%s cthresh=%s sthresh=%s" % (ar_name, chanthresh, subintthresh))
         axW.set_xlabel("Subintegration index")
@@ -218,11 +279,13 @@ def clean(archive, template="data", output="cleaned.ar", memory=False, pscrunch=
         axF.scatter(np.arange(patient_nchan), frac_flagged_chan, marker="x")
         axF.set_xlabel("Channel index")
         axF.set_ylabel("frac. flagged")
+        axF.set_ylim(-0.05, 1.05)
 
         # plot fraction of channels with particular subint flagged
         axS.scatter(np.arange(patient_nsub), frac_flagged_sub, marker="x")
         axS.set_xlabel("Subintegration index")
         axS.set_ylabel("frac. flagged")
+        axS.set_ylim(-0.05, 1.05)
 
         plt.savefig("{0}_chan{1}_sub{2}.png".format(ar_name.rsplit('.', 1)[0], chanthresh, subintthresh),
                     bbox_inches='tight')
