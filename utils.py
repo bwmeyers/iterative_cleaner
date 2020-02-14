@@ -9,6 +9,9 @@ def fft_rotate(data, bins):
     Return data rotated by 'bins' places to the left.
     The rotation is done in the Fourier domain using the Shift Theorem.
 
+    NOTE: This can leave artifacts in the rotated template if the number
+          of bins rotated is not an integer
+
         Inputs:
             data: A 1-D numpy array to rotate.
             bins: The (possibly fractional) number of bins to rotate by.
@@ -21,28 +24,29 @@ def fft_rotate(data, bins):
     return np.fft.irfft(phasor * np.fft.rfft(data))
 
 
-def subtract_scaled_rotated_template(params, temp, prof):
+def subtract_scaled_rotated_template(params, temp, prof, rot=False):
     amp, off = params
-    return amp * fft_rotate(temp, off) - prof
+    if rot:
+        return amp * fft_rotate(temp, off) - prof
+    else:
+        return amp * temp - prof
 
 
 def get_template_profile_phase(template, prof, amp_guess=1.0, phase_guess=0.0):
     """ Given a template and profile, estimate the phase offset between the two"""
-    result = least_squares(subtract_scaled_rotated_template, [amp_guess, phase_guess], args=(template, prof), method='lm')
+    result = least_squares(subtract_scaled_rotated_template, [amp_guess, phase_guess],
+                           args=(template, prof), kwargs={'rot': True}, method='lm')
     best_amp, best_phase = result.x
 
     return best_amp, best_phase
 
 
-def subtract_scaled_template(amp, temp, prof):
-    return amp * temp - prof
-
-
 def remove_profile1d(prof, isub, ichan, template, pulse_region):
     """Given a specific profile and template, attempt to subtract a scaled version of the template from the data such
     that we are left only with the nominal baseline."""
-    result = least_squares(subtract_scaled_template, [1.0], args=(template, prof), method='lm')
-    residuals = np.asarray(subtract_scaled_template(result.x, template, prof))
+    result = least_squares(subtract_scaled_rotated_template, [prof.max(), 0.0],
+                           args=(template, prof), kwargs={'rot': False}, method='lm')
+    residuals = subtract_scaled_rotated_template(result.x, template, prof, rot=False)
 
     if pulse_region != [0, 1, 1]:
         p_start = int(pulse_region[1])
@@ -51,9 +55,9 @@ def remove_profile1d(prof, isub, ichan, template, pulse_region):
 
     if not result.success:
         print("Bad status for least squares fit when removing profile.")
-        return (isub, ichan), None
+        return (isub, ichan), None, result.x
     else:
-        return (isub, ichan), residuals
+        return (isub, ichan), residuals, result.x
 
 
 def remove_profile_inplace(ar, template, pulse_region):
@@ -65,12 +69,13 @@ def remove_profile_inplace(ar, template, pulse_region):
 
     for isub, ichan in np.ndindex(nsub, nchan):
         if len(template.shape) > 1:
-            amps = remove_profile1d(data[isub, ichan], isub, ichan, template[ichan], pulse_region)[1]
+            amps, fit_res = remove_profile1d(data[isub, ichan], isub, ichan, template[ichan], pulse_region)[1:]
         else:
-            amps = remove_profile1d(data[isub, ichan], isub, ichan, template, pulse_region)[1]
+            amps, fit_res = remove_profile1d(data[isub, ichan], isub, ichan, template, pulse_region)[1:]
 
         prof = ar.get_Profile(isub, 0, ichan)
         if amps is None:
+            print("inadequate fit - weighting entire profile to 0")
             prof.set_weight(0)
         else:
             prof.get_amps()[:] = amps
