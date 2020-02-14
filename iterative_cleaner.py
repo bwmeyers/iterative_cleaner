@@ -31,9 +31,8 @@ if __name__ == "__main__":
                         help='Creates an archive that contains the pulse free residual.')
     parser.add_argument('-p', '--pscrunch', action='store_true', help='Pscrunches the output archive.')
     parser.add_argument('-l', '--log', action='store_true', help='Create cleaning log.')
-    parser.add_argument('-r', '--pulse_region', nargs=3, type=float, default=[0.0, 1.0, 1.0],
-                        metavar=('pulse_start', 'pulse_end', 'scaling_factor'),
-                        help="Defines the range of the pulse and a suppression factor.")
+    parser.add_argument('-r', '--pulse_region', nargs=2, type=float, default=None,
+                        metavar=('pulse_start', 'pulse_end'), help="Defines the on-pulse region (if desired)")
     parser.add_argument('--memory', action='store_true',
                         help='Do not pscrunch the archive while it is in memory. '
                              'Costs RAM but prevents having to reload the archive.')
