@@ -1,7 +1,10 @@
 #!/usr/bin/env python
 
+import logging
 import numpy as np
 from scipy.optimize import least_squares
+
+utils_log = logging.getLogger('iterative_cleaner.utils')
 
 
 def fft_rotate(data, bins):
@@ -36,7 +39,13 @@ def get_template_profile_phase(template, prof, amp_guess=1.0, phase_guess=0.0):
     """ Given a template and profile, estimate the phase offset between the two"""
     result = least_squares(subtract_scaled_rotated_template, [amp_guess, phase_guess],
                            args=(template, prof), kwargs={'rot': True}, method='lm')
-    best_amp, best_phase = result.x
+    if not result.success:
+        utils_log.warning("Bad status for least squares fit when rotating template.")
+        best_amp = amp_guess
+        best_phase = phase_guess
+    else:
+        utils_log.debug("Template rotation fit terminated successfully.")
+        best_amp, best_phase = result.x
 
     return best_amp, best_phase
 
@@ -54,9 +63,10 @@ def remove_profile1d(prof, isub, ichan, template, pulse_region):
         residuals[p_start:p_end] = residuals[p_start:p_end] * pulse_region[-1]
 
     if not result.success:
-        print("Bad status for least squares fit when removing profile.")
+        utils_log.warning("Bad status for least squares fit when removing profile.")
         return (isub, ichan), None, result.x
     else:
+        utils_log.debug("Profile removal fit terminated successfully.")
         return (isub, ichan), residuals, result.x
 
 
@@ -75,9 +85,10 @@ def remove_profile_inplace(ar, template, pulse_region):
 
         prof = ar.get_Profile(isub, 0, ichan)
         if amps is None:
-            print("inadequate fit - weighting entire profile to 0")
+            utils_log.info("Inadequate fit - weighting entire profile to 0")
             prof.set_weight(0)
         else:
+            utils_log.info("Updating profile data with pulse-removed amplitudes")
             prof.get_amps()[:] = amps
 
 
@@ -157,6 +168,6 @@ def find_bad_parts(archive, bad_subint_frac=1, bad_chan_frac=1):
             n_bad_channels += 1
 
     if n_bad_channels + n_bad_subints != 0:
-        print("Removed %s bad subintegrations and %s bad channels." % (n_bad_subints, n_bad_channels))
+        utils_log.info("Removed %s bad subintegrations and %s bad channels." % (n_bad_subints, n_bad_channels))
 
     return archive
