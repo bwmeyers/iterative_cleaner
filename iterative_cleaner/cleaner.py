@@ -364,7 +364,7 @@ def comprehensive_stats(data, cthresh=5, sthresh=5):
 
     cleaner_log.debug("reducing diagnostics to median values")
     test_results = np.median(scaled_diagnostics, axis=0)  # we could be more extreme and take the min/max
-    test_results = np.nan_to_num(test_results, posinf=10, neginf=10, nan=10)  # replace any NaNs or infinities with >1
+    test_results[~np.isfinite(test_results)] = 10
 
     return test_results
 
