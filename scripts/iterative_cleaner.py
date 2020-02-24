@@ -8,7 +8,7 @@ import argparse
 import logging
 import datetime
 
-from cleaner import clean
+from iterative_cleaner.cleaner import clean
 
 # create logger
 logger = logging.getLogger('iterative_cleaner')

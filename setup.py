@@ -13,5 +13,6 @@ setup(
     description='A package to clean RFI from folded pulsar data',
     keywords="signal processing",
     install_requires=reqs,
-    scripts=['iterative_cleaner.py']
+    packages=['iterative_cleaner'],
+    scripts=['scripts/iterative_cleaner.py']
 )
