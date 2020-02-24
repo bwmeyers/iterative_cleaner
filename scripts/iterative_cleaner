@@ -7,6 +7,7 @@
 import argparse
 import logging
 import datetime
+import os
 
 from iterative_cleaner.cleaner import clean
 
@@ -15,8 +16,8 @@ logger = logging.getLogger('iterative_cleaner')
 logger.setLevel(logging.DEBUG)
 
 # create file handler which logs even debug messages
-fh = logging.FileHandler('iterative_cleaner_{0}.log'.format(
-    datetime.datetime.now(datetime.timezone.utc).strftime("%d%m%Y%H%M%S")))
+fh = logging.FileHandler('{0}/iterative_cleaner_{1}.log'.format(
+    os.getcwd(), datetime.datetime.now(datetime.timezone.utc).strftime("%d%m%Y%H%M%S")))
 fh.setLevel(logging.DEBUG)
 
 # create console handler with a higher log level
