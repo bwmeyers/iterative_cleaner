@@ -7,8 +7,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.signal import savgol_filter
 
-from iterative_cleaner.utils import (remove_profile_inplace, set_weights_archive, channel_scaler, subint_scaler,
-                                     find_bad_parts, fft_rotate, get_template_profile_phase)
+from .utils import (remove_profile_inplace, set_weights_archive, channel_scaler, subint_scaler,
+                    find_bad_parts, fft_rotate, get_template_profile_phase)
 
 cleaner_log = logging.getLogger("iterative_cleaner.cleaner")
 

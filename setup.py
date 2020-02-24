@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 from setuptools import setup
 import sys
 
@@ -14,5 +15,5 @@ setup(
     keywords="signal processing",
     install_requires=reqs,
     packages=['iterative_cleaner'],
-    scripts=['scripts/iterative_cleaner.py']
+    scripts=['scripts/iterative_cleaner']
 )
