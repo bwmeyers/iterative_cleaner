@@ -13,6 +13,94 @@ from .utils import (remove_profile_inplace, set_weights_archive, channel_scaler,
 cleaner_log = logging.getLogger("iterative_cleaner.cleaner")
 
 
+def plot_archive_mask(weights, nchan, nsub, name, out):
+    fig, (axW, axF, axS) = plt.subplots(nrows=3, gridspec_kw={'height_ratios': [1, 0.3, 0.3]},
+                                        figsize=(8, 14))
+    # plot 2D representation of weights
+    weights = weights.T.squeeze().astype(bool).astype(float)
+    axW.imshow(weights, aspect='auto', interpolation='none', cmap=plt.get_cmap('coolwarm'))
+    axW.invert_yaxis()
+    axW.set_title("%s original weights" % (name))
+    axW.set_xlabel("Subintegration index")
+    axW.set_ylabel("Channel index")
+
+    frac_flagged_chan = np.sum(weights, axis=1) / float(nsub)
+    frac_flagged_sub = np.sum(weights, axis=0) / float(nchan)
+
+    # plot fraction of subints with particular channel flagged
+    axF.scatter(np.arange(nchan), frac_flagged_chan, marker="x")
+    axF.set_xlabel("Channel index")
+    axF.set_ylabel("frac. flagged")
+    axF.set_ylim(-0.05, 1.05)
+
+    # plot fraction of channels with particular subint flagged
+    axS.scatter(np.arange(nsub), frac_flagged_sub, marker="x")
+    axS.set_xlabel("Subintegration index")
+    axS.set_ylabel("frac. flagged")
+    axS.set_ylim(-0.05, 1.05)
+
+    plt.savefig(out, bbox_inches="tight")
+    plt.close(fig)
+
+    return
+
+
+def comprehensive_stats(data, cthresh=5, sthresh=5):
+    """The comprehensive scaled stats that are used for
+        the "Surgical Scrub" cleaning strategy.
+
+        Inputs:
+            data: A 3-D numpy array.
+
+            args: argparse namepsace object that need to contain the
+                following two parameters:
+
+                chanthresh: The threshold (in number of sigmas) a
+                    profile needs to stand out compared to others in the
+                    same channel for it to be removed.
+                    (Default: use value defined in config files)
+
+                subintthresh: The threshold (in number of sigmas) a profile
+                    needs to stand out compared to others in the same
+                    sub-int for it to be removed.
+                    (Default: use value defined in config files)
+
+        Output:
+            stats: A 2-D numpy array of stats.
+    """
+
+    # NOTE: This is the important part which defines what kind of statistical/measured quantities are used to decide
+    # whether some channel is corrupted. We can add/modify/remove any or all of these.
+    diagnostic_functions = [
+        np.ma.std,
+        np.ma.mean,
+        np.ma.ptp,
+        lambda data, axis: np.max(np.abs(np.fft.rfft(
+            data - np.expand_dims(data.mean(axis=axis), axis=axis),
+            axis=axis)), axis=axis)
+    ]
+
+    # Compute diagnostics, resulting in a single value per diagnostic for each subintegration/channel
+    cleaner_log.debug("computing diagnostic values for each subintegration and channel")
+    diagnostics = []
+    for func in diagnostic_functions:
+        diagnostics.append(func(data, axis=2))
+
+    # Now step through data and identify bad profiles
+    cleaner_log.debug("scaling diagnostic values")
+    scaled_diagnostics = []
+    for diag in diagnostics:
+        chan_scaled = np.abs(channel_scaler(diag)) / cthresh
+        subint_scaled = np.abs(subint_scaler(diag)) / sthresh
+        scaled_diagnostics.append(np.max((chan_scaled, subint_scaled), axis=0))
+
+    cleaner_log.debug("reducing diagnostics to median values")
+    test_results = np.median(scaled_diagnostics, axis=0)  # we could be more extreme and take the min/max
+    test_results[~np.isfinite(test_results)] = 10
+
+    return test_results
+
+
 def clean(archive, template=None, output="cleaned.ar",
           max_iter=10, chanthresh=5, subintthresh=5, bad_chan_frac=1, bad_subint_frac=1, onpulse=None,
           unload_res=True, memory=False, pscrunch=True, plot_zap=True):
@@ -43,33 +131,8 @@ def clean(archive, template=None, output="cleaned.ar",
 
     if plot_zap:
         cleaner_log.debug("plotting initial archive mask")
-        fig, (axW, axF, axS) = plt.subplots(nrows=3, gridspec_kw={'height_ratios': [1, 0.3, 0.3]},
-                                            figsize=(8, 14))
-        # plot 2D representation of weights
-        weights = orig_weights_mask.T.squeeze().astype(bool).astype(float)
-        axW.imshow(weights, aspect='auto', interpolation='none', cmap=plt.get_cmap('coolwarm'))
-        axW.invert_yaxis()
-        axW.set_title("%s original weights" % (ar_name))
-        axW.set_xlabel("Subintegration index")
-        axW.set_ylabel("Channel index")
-
-        frac_flagged_chan = np.sum(weights, axis=1) / float(patient_nsub)
-        frac_flagged_sub = np.sum(weights, axis=0) / float(patient_nchan)
-
-        # plot fraction of subints with particular channel flagged
-        axF.scatter(np.arange(patient_nchan), frac_flagged_chan, marker="x")
-        axF.set_xlabel("Channel index")
-        axF.set_ylabel("frac. flagged")
-        axF.set_ylim(-0.05, 1.05)
-
-        # plot fraction of channels with particular subint flagged
-        axS.scatter(np.arange(patient_nsub), frac_flagged_sub, marker="x")
-        axS.set_xlabel("Subintegration index")
-        axS.set_ylabel("frac. flagged")
-        axS.set_ylim(-0.05, 1.05)
-
-        plt.savefig("{0}_orig_weights.png".format(ar_name.rsplit('.', 1)[0]), bbox_inches="tight")
-        plt.close(fig)
+        orig_out_fig = "{0}_orig_weights.png".format(name.rsplit('.', 1)[0])
+        plot_archive_mask(orig_weights_mask, patient_nchan, patient_nsub, ar_name, orig_out_fig)
 
     if memory and not pscrunch:
         pass
@@ -155,7 +218,6 @@ def clean(archive, template=None, output="cleaned.ar",
         temp = None
         temp_nchan = 0
 
-
     cleaner_log.info("Total number of profiles: {0}".format(profile_number))
     loops = 0
     while x < max_iterations:
@@ -181,10 +243,11 @@ def clean(archive, template=None, output="cleaned.ar",
             rotated_template = temp
 
         if rotated_template is not None:
-            cleaner_log.debug("Extracting scaled template from data.")
-            remove_profile_inplace(patient, rotated_template, pulse_region)
+            cleaner_log.info("Extracting scaled template from data.")
+            remove_profile_inplace(patient, rotated_template)
+            cleaner_log.info("... finished")
 
-        # re-set DM to 0
+        # re-set DM to 0, more sensitive to RFI this way
         patient.dededisperse()
 
         if unload_res:
@@ -195,7 +258,6 @@ def clean(archive, template=None, output="cleaned.ar",
         data = patient.get_data()[:, 0, :, :]
         # data = apply_weights(data, orig_weights)  # No point apply weights and then just masking the array
         data = np.ma.masked_array(data, mask=mask_3d)
-
 
         # RFI-ectomy must be recommended by average of tests
         cleaner_log.debug("Computing comprehensive statistics on channel/subint basis")
@@ -261,112 +323,14 @@ def clean(archive, template=None, output="cleaned.ar",
     # Create diagnostic plot showing weights and fraction channels/subints flagged
     if plot_zap:
         cleaner_log.info("Plotting results of cleaning process")
-        fig, (axW, axF, axS) = plt.subplots(nrows=3, gridspec_kw={'height_ratios': [1, 0.3, 0.3]},
-                                            figsize=(8, 14))
-        # plot 2D representation of weights
-        weights = np.invert(ar.get_weights().T.astype(bool)).astype(float)
-        # mask the originally zero-weighted data so we can easily see the difference
-        axW.imshow(np.ma.masked_array(weights, mask=orig_weights_mask.T), aspect='auto', interpolation='none',
-                   cmap=plt.get_cmap('coolwarm'))
-        axW.invert_yaxis()
-        axW.set_title("%s cthresh=%s sthresh=%s" % (ar_name, chanthresh, subintthresh))
-        axW.set_xlabel("Subintegration index")
-        axW.set_ylabel("Channel index")
-
-        frac_flagged_chan = np.sum(weights, axis=1) / float(patient_nsub)
-        frac_flagged_sub = np.sum(weights, axis=0) / float(patient_nchan)
-
-        # plot fraction of subints with particular channel flagged
-        axF.scatter(np.arange(patient_nchan), frac_flagged_chan, marker="x")
-        axF.set_xlabel("Channel index")
-        axF.set_ylabel("frac. flagged")
-        axF.set_ylim(-0.05, 1.05)
-
-        # plot fraction of channels with particular subint flagged
-        axS.scatter(np.arange(patient_nsub), frac_flagged_sub, marker="x")
-        axS.set_xlabel("Subintegration index")
-        axS.set_ylabel("frac. flagged")
-        axS.set_ylim(-0.05, 1.05)
-
-        plt.savefig("{0}_chan{1}_sub{2}.png".format(ar_name.rsplit('.', 1)[0], chanthresh, subintthresh),
-                    bbox_inches='tight')
-        plt.close(fig)
-
-    # # Create log that contains the used parameters
-    # #TODO: replace this and all output with logging module
-    # if log:
-    #     with open("clean.log", "w+") as logfile:
-    #         logfile.write(
-    #             """%s:  Cleaned %s
-    #                     required loops=%s
-    #                     channel threshold=%f
-    #                     subint threshold=%f
-    #                     bad channel fraction threshold=%f
-    #                     bad subint fraction threshold=%f
-    #                     on-pulse region (start, end, scale_factor)=%s""" % (datetime.datetime.now(), ar_name, loops,
-    #                                                                         chanthresh, subintthresh, bad_chan_frac,
-    #                                                                         bad_subint_frac, pulse_region))
+        out_final_fig = "{0}_chan{1}_sub{2}.png".format(ar_name.rsplit('.', 1)[0], chanthresh, subintthresh)
+        plot_archive_mask(ar.get_weights(), patient_nchan, patient_nsub, ar_name, out_final_fig)
 
     cleaner_log.info("Cleaned archive unloaded as: {0}".format(output))
     ar.unload(str(output))
 
     return ar
 
-
-def comprehensive_stats(data, cthresh=5, sthresh=5):
-    """The comprehensive scaled stats that are used for
-        the "Surgical Scrub" cleaning strategy.
-
-        Inputs:
-            data: A 3-D numpy array.
-
-            args: argparse namepsace object that need to contain the
-                following two parameters:
-
-                chanthresh: The threshold (in number of sigmas) a
-                    profile needs to stand out compared to others in the
-                    same channel for it to be removed.
-                    (Default: use value defined in config files)
-
-                subintthresh: The threshold (in number of sigmas) a profile
-                    needs to stand out compared to others in the same
-                    sub-int for it to be removed.
-                    (Default: use value defined in config files)
-
-        Output:
-            stats: A 2-D numpy array of stats.
-    """
-
-    # NOTE: This is the important part which defines what kind of statistical/measured quantities are used to decide
-    # whether some channel is corrupted. We can add/modify/remove any or all of these.
-    diagnostic_functions = [
-        np.ma.std,
-        np.ma.mean,
-        np.ma.ptp,
-        lambda data, axis: np.max(np.abs(np.fft.rfft(
-            data - np.expand_dims(data.mean(axis=axis), axis=axis),
-            axis=axis)), axis=axis)
-    ]
-
-    # Compute diagnostics, resulting in a single value per diagnostic for each subintegration/channel
-    cleaner_log.debug("computing diagnostic values for each subintegration and channel")
-    diagnostics = []
-    for func in diagnostic_functions:
-        diagnostics.append(func(data, axis=2))
-
-    # Now step through data and identify bad profiles
-    cleaner_log.debug("scaling diagnostic values")
-    scaled_diagnostics = []
-    for diag in diagnostics:
-        chan_scaled = np.abs(channel_scaler(diag)) / cthresh
-        subint_scaled = np.abs(subint_scaler(diag)) / sthresh
-        scaled_diagnostics.append(np.max((chan_scaled, subint_scaled), axis=0))
-
-    cleaner_log.debug("reducing diagnostics to median values")
-    test_results = np.median(scaled_diagnostics, axis=0)  # we could be more extreme and take the min/max
-    test_results[~np.isfinite(test_results)] = 10
-
-    return test_results
 
 
 
