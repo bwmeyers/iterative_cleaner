@@ -30,15 +30,15 @@ def fft_rotate(data, bins):
 def subtract_scaled_rotated_template(params, temp, prof, rot=False):
     amp, off = params
     if rot:
-        return amp * fft_rotate(temp, off) - prof
+        return prof - amp * fft_rotate(temp, off)
     else:
-        return amp * temp - prof
+        return prof - amp * temp
 
 
 def get_template_profile_phase(template, prof, amp_guess=1.0, phase_guess=0.0):
     """ Given a template and profile, estimate the phase offset between the two"""
     result = least_squares(subtract_scaled_rotated_template, [amp_guess, phase_guess],
-                           args=(template, prof), kwargs={'rot': True}, method='lm')
+                           args=(template, prof), kwargs={'rot': True}, loss='soft_l1')
     if not result.success:
         utils_log.warning("Bad status for least squares fit when rotating template.")
         best_amp = amp_guess
@@ -50,27 +50,21 @@ def get_template_profile_phase(template, prof, amp_guess=1.0, phase_guess=0.0):
     return best_amp, best_phase
 
 
-def remove_profile1d(prof, isub, ichan, template, pulse_region):
+def remove_profile1d(prof, template, isub, ichan):
     """Given a specific profile and template, attempt to subtract a scaled version of the template from the data such
     that we are left only with the nominal baseline."""
-    result = least_squares(subtract_scaled_rotated_template, [prof.max(), 0.0],
-                           args=(template, prof), kwargs={'rot': False}, method='lm')
-    residuals = subtract_scaled_rotated_template(result.x, template, prof, rot=False)
-
-    if pulse_region != [0, 1, 1]:
-        p_start = int(pulse_region[1])
-        p_end = int(pulse_region[2])
-        residuals[p_start:p_end] = residuals[p_start:p_end] * pulse_region[-1]
+    result = least_squares(subtract_scaled_rotated_template, [0.1 * prof[np.argmax(template)], 0.0],
+                           args=(template, prof), kwargs={'rot': False}, loss='soft_l1')
 
     if not result.success:
-        utils_log.warning("Bad status for least squares fit when removing profile.")
-        return (isub, ichan), None, result.x
+        utils_log.warning(
+            "isub={0} ichan={1} Bad status for least squares fit when removing profile.".format(isub, ichan))
+        return None, result.x
     else:
-        utils_log.debug("Profile removal fit terminated successfully.")
-        return (isub, ichan), residuals, result.x
+        return result.fun, result.x
 
 
-def remove_profile_inplace(ar, template, pulse_region):
+def remove_profile_inplace(ar, template):
     """Remove the template profile from the individual data profiles."""
     data = ar.get_data()[:, 0, :, :]  # Select first polarization channel
     # archive is P-scrunched, so this is total intensity
@@ -79,16 +73,15 @@ def remove_profile_inplace(ar, template, pulse_region):
 
     for isub, ichan in np.ndindex(nsub, nchan):
         if len(template.shape) > 1:
-            amps, fit_res = remove_profile1d(data[isub, ichan], isub, ichan, template[ichan], pulse_region)[1:]
+            amps, fit_res = remove_profile1d(data[isub, ichan], template[ichan], isub, ichan)
         else:
-            amps, fit_res = remove_profile1d(data[isub, ichan], isub, ichan, template, pulse_region)[1:]
+            amps, fit_res = remove_profile1d(data[isub, ichan], template, isub, ichan)
 
         prof = ar.get_Profile(isub, 0, ichan)
         if amps is None:
-            utils_log.info("Inadequate fit - weighting entire profile to 0")
+            utils_log.warning("isub={0} ichan={1} Zero-weighting profile".format(isub, ichan))
             prof.set_weight(0)
         else:
-            utils_log.info("Updating profile data with pulse-removed amplitudes")
             prof.get_amps()[:] = amps
 
 
