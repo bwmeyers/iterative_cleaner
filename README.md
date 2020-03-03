@@ -9,7 +9,7 @@ The original `CoastGuard` pipeline is described in
 The "surgical cleaner" of `CoastGuard` was altered to in order to be more useful 
 for LOFAR scintillation studies by Lars Kuenkel (which is described 
 [here](https://www2.physik.uni-bielefeld.de/fileadmin/user_upload/radio_astronomy/Publications/Masterarbeit_LarsKuenkel.pdf)). 
-It has been further updated to work in Python 3, to be an installable package, 
+It has been further updated to work in Python 2 and 3, to be an installable package, 
 and the template subtraction has been overhauled (though is still being developed).
 
 For an unbiased cleaning approach, I recommend cleaning without template 

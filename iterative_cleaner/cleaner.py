@@ -20,7 +20,7 @@ def plot_archive_mask(weights, nchan, nsub, name, out):
     weights = weights.T.squeeze().astype(bool).astype(float)
     axW.imshow(weights, aspect='auto', interpolation='none', cmap=plt.get_cmap('coolwarm'))
     axW.invert_yaxis()
-    axW.set_title("%s original weights" % (name))
+    axW.set_title("{0} original weights".format(name))
     axW.set_xlabel("Subintegration index")
     axW.set_ylabel("Channel index")
 
@@ -75,8 +75,8 @@ def comprehensive_stats(data, cthresh=5, sthresh=5):
         np.ma.std,
         np.ma.mean,
         np.ma.ptp,
-        lambda data, axis: np.max(np.abs(np.fft.rfft(
-            data - np.expand_dims(data.mean(axis=axis), axis=axis),
+        lambda d, axis: np.max(np.abs(np.fft.rfft(
+            d - np.expand_dims(d.mean(axis=axis), axis=axis),
             axis=axis)), axis=axis)
     ]
 
@@ -154,8 +154,7 @@ def clean(archive, template=None, output="cleaned.ar",
     max_iterations = max_iter
 
     # Create list that is used to end the iteration
-    test_weights = []
-    test_weights.append(patient.get_weights())
+    test_weights = [patient.get_weights()]
     profile_number = orig_weights.size
 
     # Try to load template and ensure it will work with the data (i.e. has the same number of channels)
@@ -210,7 +209,7 @@ def clean(archive, template=None, output="cleaned.ar",
         patient.fscrunch()
         patient.tscrunch()
         temp = savgol_filter(patient.get_Profile(0, 0, 0).get_amps(), 11, 3)
-        temp = temp / temp.max()
+        temp = temp / np.max(temp)
         temp_nchan = 1
         # No need to phase align here since it's created from the data
     else:
@@ -294,7 +293,7 @@ def clean(archive, template=None, output="cleaned.ar",
             patient.fscrunch()
             patient.tscrunch()
             temp = savgol_filter(patient.get_Profile(0, 0, 0).get_amps(), 11, 3)
-            temp = temp / temp.max()
+            temp = temp / np.max(temp)
             # No need to phase align since it's created from the data
 
     if x == max_iterations:
