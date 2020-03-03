@@ -4,6 +4,8 @@
 # Originally written by Patrick Lazarus. Modified by Lars Kuenkel.
 # Adapted for NANOGrav wideband data by Bradley Meyers.
 
+from __future__ import print_function
+
 import argparse
 import logging
 import datetime
@@ -11,30 +13,24 @@ import os
 
 from iterative_cleaner.cleaner import clean
 
-# create logger
-logger = logging.getLogger('iterative_cleaner')
-logger.setLevel(logging.DEBUG)
-
-# create file handler which logs even debug messages
-fh = logging.FileHandler('{0}/iterative_cleaner_{1}.log'.format(
-    os.getcwd(), datetime.datetime.now(datetime.timezone.utc).strftime("%d%m%Y%H%M%S")))
-fh.setLevel(logging.DEBUG)
-
-# create console handler with a higher log level
-ch = logging.StreamHandler()
-ch.setLevel(logging.INFO)
-
-# create formatter and add it to the handlers
-formatter = logging.Formatter('[%(levelname)7s - %(asctime)s] - %(name)s: %(message)s')
-fh.setFormatter(formatter)
-ch.setFormatter(formatter)
-
-# add the handlers to the logger
-logger.addHandler(fh)
-logger.addHandler(ch)
 
 
 if __name__ == "__main__":
+    # create logger
+    logger = logging.getLogger('iterative_cleaner')
+    logger.setLevel(logging.DEBUG)
+  
+    # create console handler with a higher log level
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.INFO)
+
+    # create formatter and add it to the handlers
+    formatter = logging.Formatter('[%(levelname)7s - %(asctime)s] - %(name)s: %(message)s')
+    ch.setFormatter(formatter)
+
+    logger.addHandler(ch)
+
+
     parser = argparse.ArgumentParser(description='Commands for the cleaner')
     parser.add_argument('archive', nargs='+', type=str, help='The chosen archive(s)')
     parser.add_argument('-t', '--template', type=str, default=None,
@@ -66,6 +62,14 @@ if __name__ == "__main__":
                         help='Creates a plot that shows which profiles get zapped.')
 
     args = parser.parse_args()
+
+    # create file handler which logs even debug messages
+    fh = logging.FileHandler('{0}/iterative_cleaner_{1}.log'.format(
+        os.getcwd(), datetime.datetime.utcnow().strftime("%Y%m%d-%H%M%S")))
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(formatter)
+    logger.addHandler(fh)
+
 
     # Loop over each of the provided archives
     # This is terribly gross, but I'm trying to make the clean function agnostic...
