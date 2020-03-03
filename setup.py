@@ -2,10 +2,8 @@
 from setuptools import setup
 import sys
 
-reqs = ['numpy>=1.16.0', 'matplotlib>=3.0.0', 'scipy>=1.2.0']
+reqs = ['numpy>=1.16.0', 'matplotlib', 'scipy>=1.2.0']
 
-if sys.version_info < (3, 5):
-    sys.exit('iterative_cleaner requires Python 3.5+')
 
 setup(
     name='iterative_cleaner',
