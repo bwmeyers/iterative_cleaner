@@ -1,7 +1,5 @@
 #!/usr/bin/env python
 
-from __future__ import print_function
-
 import logging
 import numpy as np
 from scipy.optimize import least_squares
