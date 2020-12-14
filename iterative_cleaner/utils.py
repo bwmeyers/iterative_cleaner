@@ -94,13 +94,21 @@ def apply_weights(data, weights):
     return data
 
 
-def set_weights_archive(archive, test_results):
-    """Apply the weights to an archive according to the test results.
-    This changes the archive INPLACE, so ensure that the provided archive is a copy of the original.
+def update_weights(weights, test_results):
+    """Update a weights array according to the test results.
     """
+    updated_weights = np.copy(weights)
     for (isub, ichan) in np.argwhere(test_results >= 1):
-        integ = archive.get_Integration(int(isub))
-        integ.set_weight(int(ichan), 0.0)
+        updated_weights[isub, ichan] = 0.0
+
+    return updated_weights
+
+
+def update_archive_weights(archive, weights):
+    """Update the weights in an archive (in place!)"""
+    for isub, ichan in np.ndindex(weights.shape):
+        integration = archive.get_Integration(isub)
+        integration.set_weight(ichan, int(weights[isub, ichan]))
 
 
 def channel_scaler(array2d):
@@ -135,32 +143,42 @@ def subint_scaler(array2d):
     return scaled
 
 
-def find_bad_parts(archive, bad_subint_frac=1, bad_chan_frac=1):
+def find_bad_parts(weights, bad_subint_frac=1, bad_chan_frac=1):
     """Checks whether whole channels or subints should be removed
     """
-    weights = archive.get_weights()
-    n_subints = archive.get_nsubint()
-    n_channels = archive.get_nchan()
-    n_bad_channels = 0
-    n_bad_subints = 0
+    updated_weights = np.copy(weights)
 
-    for i in range(n_subints):
-        bad_frac = 1 - np.count_nonzero(weights[i, :]) / float(n_channels)
-        if bad_frac > bad_subint_frac:
-            for j in range(n_channels):
-                integ = archive.get_Integration(int(i))
-                integ.set_weight(int(j), 0.0)
-            n_bad_subints += 1
+    # check for largely corrupted subintegrations
+    subint_weights = weights.mean(axis=1)
+    n_bad_subints = len(np.argwhere(subint_weights <= 1 - bad_subint_frac))
+    utils_log.info(f"Number of removed subints: {n_bad_subints}")
+    updated_weights[subint_weights <= 1 - bad_subint_frac, :] = 0
 
-    for j in range(n_channels):
-        bad_frac = 1 - np.count_nonzero(weights[:, j]) / float(n_subints)
-        if bad_frac > bad_chan_frac:
-            for i in range(n_subints):
-                integ = archive.get_Integration(int(i))
-                integ.set_weight(int(j), 0.0)
-            n_bad_channels += 1
+    # check for largely corrupted channels
+    channel_weights = weights.mean(axis=0)
+    n_bad_channels = len(np.argwhere(channel_weights <= 1 - bad_chan_frac))
+    utils_log.info(f"Number of removed channels: {n_bad_channels}")
+    updated_weights[:, channel_weights <= 1 - bad_chan_frac] = 0
 
-    if n_bad_channels + n_bad_subints != 0:
-        utils_log.info("Removed %s bad subintegrations and %s bad channels." % (n_bad_subints, n_bad_channels))
+    return updated_weights
 
-    return archive
+    # for i in range(n_subints):
+    #     bad_frac = 1 - np.count_nonzero(weights[i, :]) / float(n_channels)
+    #     if bad_frac > bad_subint_frac:
+    #         for j in range(n_channels):
+    #             integ = archive.get_Integration(int(i))
+    #             integ.set_weight(int(j), 0.0)
+    #         n_bad_subints += 1
+    #
+    # for j in range(n_channels):
+    #     bad_frac = 1 - np.count_nonzero(weights[:, j]) / float(n_subints)
+    #     if bad_frac > bad_chan_frac:
+    #         for i in range(n_subints):
+    #             integ = archive.get_Integration(int(i))
+    #             integ.set_weight(int(j), 0.0)
+    #         n_bad_channels += 1
+
+    # if n_bad_channels + n_bad_subints != 0:
+    #     utils_log.info("Removed %s bad subintegrations and %s bad channels." % (n_bad_subints, n_bad_channels))
+    #
+    # return archive
