@@ -10,6 +10,7 @@ import datetime
 import os
 
 from iterative_cleaner.cleaner import clean
+from iterative_cleaner.cleaner import IterativeCleaner
 
 # create logger
 logger = logging.getLogger('iterative_cleaner')
@@ -55,6 +56,10 @@ if __name__ == "__main__":
                         help='Defines the on-pulse region (if desired)')
     parser.add_argument('-m', '--max_iter', type=int, default=5, metavar='max_iterations',
                         help='Maximum number of iterations.')
+    parser.add_argument("-z", type=str, default=None,
+                        help="Known bad channel numbers, space separated in a string")
+    parser.add_argument("-w", type=str, default=None,
+                        help="Known bad subint numbers, space separated in a string")
     parser.add_argument('--unload_res', action='store_true',
                         help='Creates an archive that contains the pulse free residual.')
     parser.add_argument('--pscrunch', action='store_true', help='Scrunches output archive to total intensity only.')
@@ -67,10 +72,17 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+
     # Loop over each of the provided archives
     # This is terribly gross, but I'm trying to make the clean function agnostic...
     arch_list = args.__dict__.pop('archive')
     kwargs = args.__dict__.copy()
     for arch in arch_list:
-        output = "{0}_clean.ar".format(arch.rsplit('.', 1)[0])
-        clean(arch, output=output, **kwargs)
+        #output = "{0}_clean.ar".format(arch.rsplit('.', 1)[0])
+        #clean(arch, output=output, **kwargs)
+        itercleaner = IterativeCleaner(arch, max_iter=3,
+                                       known_bad_subints=args.w,
+                                       known_bad_channels=args.z)
+        itercleaner.clean_without_template()
+
+
