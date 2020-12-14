@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+import os
 import logging
 import psrchive
 
@@ -7,20 +8,157 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.signal import savgol_filter
 
-from .utils import (remove_profile_inplace, set_weights_archive, channel_scaler, subint_scaler,
-                    find_bad_parts, fft_rotate, get_template_profile_phase)
+from .utils import (remove_profile_inplace, update_weights, update_archive_weights,
+                    channel_scaler, subint_scaler, find_bad_parts, fft_rotate,
+                    get_template_profile_phase
+                    )
 
 cleaner_log = logging.getLogger("iterative_cleaner.cleaner")
 
 
-def plot_archive_mask(weights, nchan, nsub, name, out):
+class IterativeCleaner(object):
+    def __init__(self, datafile, templatefile=None, max_iter=10,
+                 channelthresh=4, subintthresh=4, bad_channel_frac=0.5,
+                 bad_subint_frac=0.7, known_bad_channels=None, known_bad_subints=None
+                 ):
+        self.data_path = datafile
+        self.template_path = templatefile
+        data_basename = os.path.basename(self.data_path)
+        data_prefix, data_suffix = os.path.splitext(data_basename)
+        self.out_name = data_prefix + '_iterclean' + data_suffix
+
+        self.original = psrchive.Archive_load(self.data_path)
+        self.original.set_state(b'Stokes')
+        self.nchan = self.original.get_nchan()
+        self.nsub = self.original.get_nsubint()
+        self.nbin = self.original.get_nbin()
+        self.npol = self.original.get_npol()
+        self.original_weights = self.original.get_weights()
+        self.patient = self.original.clone()  # working copy
+        self.patient_weights = self.patient.get_weights()
+        self.weights_mask = np.bitwise_not(
+            np.expand_dims(self.patient_weights, 2).astype(bool)
+        )
+
+        mjd_start = float(self.original.start_time().strtempo())
+        mjd_end = float(self.original.end_time().strtempo())
+        self.mjd = mjd_start + (mjd_end - mjd_start) / 2.0
+        self.name = self.original.get_source()
+        self.cent_freq = self.original.get_centre_frequency()
+
+        self.max_iterations = max_iter
+        self.channel_threshold = channelthresh
+        self.subint_threshold = subintthresh
+        self.bad_channel_frac = bad_channel_frac
+        self.bad_subint_frac = bad_subint_frac
+        if known_bad_channels is not None:
+            self.known_badchan_list = [
+                int(x) for x in known_bad_channels.split(' ')
+            ]
+        else:
+            self.known_badchan_list = None
+        if known_bad_subints is not None:
+            self.known_badsubint_list = [
+                int(x) for x in known_bad_subints.split(' ')
+            ]
+        else:
+            self.known_badsubint_list = None
+
+    def clean_with_template(self):
+        # Nominally, align template, remove from data, send off to
+        # clean_without_template (may need to rejig common code into another
+        # function
+        pass
+
+    def clean_without_template(self):
+        self.patient.pscrunch()
+        self.patient.remove_baseline()
+        self.patient.dedisperse()
+
+        new_weights = self.patient_weights
+        if isinstance(self.known_badchan_list, list):
+            print("adding user defined bad channels to weights")
+            new_weights[:, self.known_badchan_list] = 0
+            self.weights_mask = np.bitwise_not(
+                np.expand_dims(new_weights, 2).astype(bool)
+            )
+
+        if isinstance(self.known_badsubint_list, list):
+            print("adding user defined bad subints to weights")
+            new_weights[self.known_badsubint_list, :] = 0
+            self.weights_mask = np.bitwise_not(
+                np.expand_dims(new_weights, 2).astype(bool)
+            )
+
+        converged = False
+
+        i = 0
+        while i < self.max_iterations and not converged:
+            cleaner_log.info(f"Iteration: {i}")
+            i += 1
+            data = np.ma.MaskedArray(
+                self.patient.get_data()[:, 0, :, :],
+                mask=self.weights_mask.repeat(self.nbin, axis=2)
+            )  # subint, pol, chan, bin
+
+            avg_test_results = comprehensive_stats(
+                data,
+                cthresh=self.channel_threshold,
+                sthresh=self.subint_threshold
+            )
+
+            previous_bad_frac = 1 - new_weights.mean()
+            new_weights = update_weights(new_weights, avg_test_results)
+            new_bad_frac = 1 - new_weights.mean()
+            cleaner_log.info(f"Previous bad fraction: {previous_bad_frac}")
+            cleaner_log.info(f"New bad fraction: {new_bad_frac}")
+
+            self.weights_mask = np.bitwise_not(
+                np.expand_dims(new_weights, 2).astype(bool)
+            )
+
+            if np.isclose(previous_bad_frac, new_bad_frac, rtol=1.0e-4):
+                converged = True
+                diff = new_bad_frac - previous_bad_frac
+                cleaner_log.info(f"Converged - difference between new and old "
+                                 f"bad fraction is {diff:g} (< 1e-4)"
+                                 )
+
+        cleaner_log.info(
+                "Masking addition data based on bad channel/subint fraction "
+                "thresholds"
+        )
+        updated_new_weights = find_bad_parts(
+            new_weights,
+            bad_subint_frac=self.bad_subint_frac,
+            bad_chan_frac=self.bad_channel_frac
+        )
+
+        plot_archive_mask(
+            updated_new_weights, self.nchan, self.nsub, self.bad_channel_frac,
+            self.bad_subint_frac, self.name, 'test.png'
+        )
+
+        print(updated_new_weights)
+
+        update_archive_weights(self.original, updated_new_weights)
+        self.original.unload(self.out_name)
+
+
+
+
+
+
+
+
+def plot_archive_mask(weights, nchan, nsub, badchan_thresh, badsubint_thresh, name, out):
     fig, (axW, axF, axS) = plt.subplots(nrows=3, gridspec_kw={'height_ratios': [1, 0.3, 0.3]},
                                         figsize=(8, 14))
     # plot 2D representation of weights
     weights = weights.T.squeeze().astype(bool).astype(float)
     axW.imshow(weights, aspect='auto', interpolation='none', cmap=plt.get_cmap('coolwarm'))
     axW.invert_yaxis()
-    axW.set_title("%s original weights" % (name))
+    axW.set_title("%s weights" % (name))
     axW.set_xlabel("Subintegration index")
     axW.set_ylabel("Channel index")
 
@@ -28,13 +166,15 @@ def plot_archive_mask(weights, nchan, nsub, name, out):
     frac_flagged_sub = np.sum(weights, axis=0) / float(nchan)
 
     # plot fraction of subints with particular channel flagged
-    axF.scatter(np.arange(nchan), frac_flagged_chan, marker="x")
+    axF.scatter(np.arange(nchan), 1-frac_flagged_chan, marker="x")
+    axF.axhline(badchan_thresh, ls=":", color='k')
     axF.set_xlabel("Channel index")
     axF.set_ylabel("frac. flagged")
     axF.set_ylim(-0.05, 1.05)
 
     # plot fraction of channels with particular subint flagged
-    axS.scatter(np.arange(nsub), frac_flagged_sub, marker="x")
+    axS.scatter(np.arange(nsub), 1-frac_flagged_sub, marker="x")
+    axS.axhline(badsubint_thresh, ls=":", color='k')
     axS.set_xlabel("Subintegration index")
     axS.set_ylabel("frac. flagged")
     axS.set_ylim(-0.05, 1.05)
@@ -118,7 +258,9 @@ def clean(archive, template=None, output="cleaned.ar",
     patient_nchan = ar.get_nchan()
     patient_nsub = ar.get_nsubint()
     patient_nbin = ar.get_nbin()
-    mjd = (float(ar.start_time().strtempo()) + float(ar.end_time().strtempo())) / 2.0
+    mjd_start = float(ar.start_time().strtempo())
+    mjd_end = float(ar.end_time().strtempo())
+    mjd = mjd_start + (mjd_end - mjd_start) / 2.0
     name = ar.get_source()
     cent_freq = ar.get_centre_frequency()
 
