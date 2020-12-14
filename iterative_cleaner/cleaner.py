@@ -113,6 +113,7 @@ def clean(archive, template=None, output="cleaned.ar",
         onpulse = [None, None]
 
     ar = psrchive.Archive_load(str(archive))
+    ar.convert_state(b'Stokes')
     ar_name = ar.get_filename().split()[-1]
     patient_nchan = ar.get_nchan()
     patient_nsub = ar.get_nsubint()
