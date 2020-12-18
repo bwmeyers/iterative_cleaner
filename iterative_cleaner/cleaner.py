@@ -3,10 +3,12 @@
 import os
 import logging
 import psrchive
+from pplib import read_spline_model, fit_phase_shift, rotate_profile
 
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.signal import savgol_filter
+from scipy.stats.mstats import kurtosis, skew
 
 from .utils import (remove_profile_inplace, update_weights, update_archive_weights,
                     channel_scaler, subint_scaler, find_bad_parts, fft_rotate,
@@ -18,14 +20,17 @@ cleaner_log = logging.getLogger("iterative_cleaner.cleaner")
 
 class IterativeCleaner(object):
     def __init__(self, datafile, templatefile=None, max_iter=10,
-                 channelthresh=4, subintthresh=4, bad_channel_frac=0.5,
-                 bad_subint_frac=0.7, known_bad_channels=None, known_bad_subints=None
+                 channelthresh=5, subintthresh=5, bad_channel_frac=0.8,
+                 bad_subint_frac=0.8, known_bad_channels=None,
+                 known_bad_subints=None
                  ):
         self.data_path = datafile
         self.template_path = templatefile
         data_basename = os.path.basename(self.data_path)
         data_prefix, data_suffix = os.path.splitext(data_basename)
         self.out_name = data_prefix + '_iterclean' + data_suffix
+        cleaner_log.info(f"Loading archive {data_basename}")
+        cleaner_log.info(f"Cleaned archive will be {self.out_name}")
 
         self.original = psrchive.Archive_load(self.data_path)
         self.original.set_state(b'Stokes')
@@ -36,15 +41,20 @@ class IterativeCleaner(object):
         self.original_weights = self.original.get_weights()
         self.patient = self.original.clone()  # working copy
         self.patient_weights = self.patient.get_weights()
-        self.weights_mask = np.bitwise_not(
-            np.expand_dims(self.patient_weights, 2).astype(bool)
-        )
+        self.weights_mask = None
 
         mjd_start = float(self.original.start_time().strtempo())
         mjd_end = float(self.original.end_time().strtempo())
         self.mjd = mjd_start + (mjd_end - mjd_start) / 2.0
         self.name = self.original.get_source()
         self.cent_freq = self.original.get_centre_frequency()
+
+        cleaner_log.debug(f"source name: {self.name}")
+        cleaner_log.debug(f"centre frequency: {self.cent_freq:.3f} MHz")
+        cleaner_log.debug(f"MJD of mid-point: {self.mjd}")
+        cleaner_log.debug(f"number of channels: {self.nchan}")
+        cleaner_log.debug(f"number of subints: {self.nsub}")
+        cleaner_log.debug(f"number of polns: {self.npol}")
 
         self.max_iterations = max_iter
         self.channel_threshold = channelthresh
@@ -64,31 +74,189 @@ class IterativeCleaner(object):
         else:
             self.known_badsubint_list = None
 
-    def clean_with_template(self):
-        # Nominally, align template, remove from data, send off to
-        # clean_without_template (may need to rejig common code into another
-        # function
-        pass
-
-    def clean_without_template(self):
+    def prepare_archive(self):
         self.patient.pscrunch()
         self.patient.remove_baseline()
         self.patient.dedisperse()
 
         new_weights = self.patient_weights
+        new_weights[new_weights > 0] = 1.0
         if isinstance(self.known_badchan_list, list):
-            print("adding user defined bad channels to weights")
+            cleaner_log.info("adding user defined bad channels to weights")
             new_weights[:, self.known_badchan_list] = 0
+
+        if isinstance(self.known_badsubint_list, list):
+            cleaner_log.info("adding user defined bad subints to weights")
+            new_weights[self.known_badsubint_list, :] = 0
+
+        self.weights_mask = np.bitwise_not(
+            np.expand_dims(new_weights, 2).astype(bool)
+        )
+
+        return new_weights
+
+
+    def clean_with_template(self):
+        # Nominally, align template, remove from data, send off to
+        # clean_without_template (may need to rejig common code into another
+        # function)
+
+        new_weights = self.prepare_archive()
+
+        if self.template_path.endswith('spl'):
+            cleaner_log.info(f"Loading template from {self.template_path}")
+            template = read_spline_model(
+                self.template_path,
+                freqs=self.patient.get_frequencies()
+            )[-1]
+        else:
+           template = np.zeros((self.nchan, self.nbin))
+
+        plt.imshow(template, aspect='auto', interpolation='none', origin='lower')
+        plt.xlabel("Phase bin")
+        plt.ylabel("Freq. channel")
+        plt.show()
+
+        cleaner_log.debug(f"template shape = {template.shape}")
+
+        data = self.patient.get_data()[:, 0, :, :]
+        residuals = np.zeros_like(data.squeeze())
+
+        sub_chan_to_mask = []
+        for isub, ichan in np.ndindex((self.nsub, self.nchan)):
+            data_profile = data[isub, ichan]
+            model_profile = template[ichan]
+
+            if not all(data_profile == 0):
+
+            # test1 = np.where(np.isnan(data_profile) == True)
+            # test2 = np.where(np.isnan(model_profile) == True)
+            # if len(test1[0]) > 0 or len(test2[0]) > 0:
+            #     print(f"NaNs before fit-shift for sub,chan = {isub},{ichan}")
+            #     print("data:", data_profile)
+            #     print("model:", model_profile)
+            #
+            #     plt.plot(data_profile, label="data")
+            #     plt.plot(model_profile, label="model")
+            #     plt.title(f"subint={isub}, channel={ichan}")
+            #     plt.legend()
+            #     plt.show()
+
+                r = fit_phase_shift(data_profile, model_profile)
+
+                model_profile *= r.scale
+                data_profile = rotate_profile(data_profile, r.phase)
+
+                test1 = np.where(np.isnan(data_profile.squeeze()) == True)
+                test2 = np.where(np.isnan(model_profile.squeeze()) == True)
+                if len(test1[0]) > 0 or len(test2[0]) > 0:
+                    cleaner_log.warning(
+                        "NaNs in scaled model or rotated profile after "
+                        "fit-shift"
+                    )
+
+                residuals[isub, ichan, :] = data_profile - model_profile
+            else:
+                cleaner_log.debug(f"Bad data for sub,chan = {isub, ichan}")
+                residuals[isub, ichan, :] = np.zeros(self.nbin)
+                sub_chan_to_mask.append((isub, ichan))
+
+        converged = False
+
+        plt.imshow(np.nanmean(residuals, axis=0), aspect='auto',
+                   origin='lower')
+        plt.xlabel('Phase bin')
+        plt.ylabel('Freq. channel')
+        plt.savefig('test_before_waterfall.png')
+        plt.clf()
+
+        plt.imshow(np.nanmean(residuals, axis=1), aspect='auto',
+                   origin='lower')
+        plt.xlabel('Phase bin')
+        plt.ylabel('Subint index')
+        plt.savefig('test_before_timephas.png')
+        plt.close()
+
+        i = 0
+        while i < self.max_iterations and not converged:
+            cleaner_log.info(f"Iteration: {i}")
+            i += 1
+            data = np.ma.MaskedArray(
+                residuals,
+                mask=self.weights_mask.repeat(self.nbin, axis=2)
+            )  # subint, pol, chan, bin
+            for (i, j) in sub_chan_to_mask:
+                data.mask[i, j] = True
+
+            avg_test_results = comprehensive_stats(
+                data,
+                cthresh=self.channel_threshold,
+                sthresh=self.subint_threshold
+            )
+
+            previous_bad_frac = 1 - new_weights.mean()
+            new_weights = update_weights(new_weights, avg_test_results)
+            new_bad_frac = 1 - new_weights.mean()
+            cleaner_log.info(f"Previous bad fraction: {previous_bad_frac}")
+            cleaner_log.info(f"New bad fraction: {new_bad_frac}")
+
             self.weights_mask = np.bitwise_not(
                 np.expand_dims(new_weights, 2).astype(bool)
             )
 
-        if isinstance(self.known_badsubint_list, list):
-            print("adding user defined bad subints to weights")
-            new_weights[self.known_badsubint_list, :] = 0
-            self.weights_mask = np.bitwise_not(
-                np.expand_dims(new_weights, 2).astype(bool)
-            )
+            if np.isclose(previous_bad_frac, new_bad_frac, rtol=1.0e-4):
+                converged = True
+                diff = new_bad_frac - previous_bad_frac
+                cleaner_log.info(f"Converged - difference between new and old "
+                                 f"bad fraction is {diff:g} (< 1e-4)"
+                                 )
+        cleaner_log.info(
+            "Masking addition data based on bad channel/subint fraction "
+            "thresholds"
+        )
+        updated_new_weights = find_bad_parts(
+            new_weights,
+            bad_subint_frac=self.bad_subint_frac,
+            bad_chan_frac=self.bad_channel_frac
+        )
+
+        m = np.bitwise_not(
+            np.expand_dims(updated_new_weights, 2).astype(bool)
+        )
+        print(m.shape, residuals.shape)
+        residuals[np.repeat(m, self.nbin, axis=2)] = np.nan
+        plt.imshow(np.nanmean(residuals, axis=0), aspect='auto',
+                   origin='lower')
+        plt.xlabel('Phase bin')
+        plt.ylabel('Freq. channel')
+        plt.savefig('test_after_waterfall.png')
+        plt.clf()
+
+        plt.imshow(np.nanmean(residuals, axis=1), aspect='auto',
+                   origin='lower')
+        plt.xlabel('Phase bin')
+        plt.ylabel('Subint index')
+        plt.savefig('test_after_timephas.png')
+        plt.close()
+
+
+        plot_archive_mask(
+            self.original_weights, self.nchan, self.nsub,
+            self.bad_channel_frac,
+            self.bad_subint_frac, self.name, 'test_orig.png'
+        )
+        plot_archive_mask(
+            updated_new_weights, self.nchan, self.nsub,
+            self.bad_channel_frac,
+            self.bad_subint_frac, self.name, 'test_cleaned.png'
+        )
+
+        update_archive_weights(self.original,
+                               updated_new_weights * self.original_weights)
+        self.original.unload(self.out_name)
+
+    def clean_without_template(self):
+        new_weights = self.prepare_archive()
 
         converged = False
 
@@ -107,6 +275,7 @@ class IterativeCleaner(object):
                 sthresh=self.subint_threshold
             )
 
+            print(new_weights[:,14])
             previous_bad_frac = 1 - new_weights.mean()
             new_weights = update_weights(new_weights, avg_test_results)
             new_bad_frac = 1 - new_weights.mean()
@@ -134,20 +303,24 @@ class IterativeCleaner(object):
             bad_chan_frac=self.bad_channel_frac
         )
 
+        # print(data.shape)
+        # plt.figure()
+        # plt.hist(data.mean(axis=1)[1])
+        # plt.title(f"skew={skew(data.mean(axis=1)[1])}")
+        # plt.show()
+
+        plot_archive_mask(
+            self.original_weights, self.nchan, self.nsub, self.bad_channel_frac,
+            self.bad_subint_frac, self.name, 'test_orig.png'
+        )
         plot_archive_mask(
             updated_new_weights, self.nchan, self.nsub, self.bad_channel_frac,
-            self.bad_subint_frac, self.name, 'test.png'
+            self.bad_subint_frac, self.name, 'test_cleaned.png'
         )
 
-        print(updated_new_weights)
-
-        update_archive_weights(self.original, updated_new_weights)
+        update_archive_weights(self.original,
+                               updated_new_weights * self.original_weights)
         self.original.unload(self.out_name)
-
-
-
-
-
 
 
 
@@ -214,11 +387,16 @@ def comprehensive_stats(data, cthresh=5, sthresh=5):
     diagnostic_functions = [
         np.ma.std,
         np.ma.mean,
+        #kurtosis,
+        #skew,
         np.ma.ptp,
         lambda data, axis: np.max(np.abs(np.fft.rfft(
             data - np.expand_dims(data.mean(axis=axis), axis=axis),
             axis=axis)), axis=axis)
     ]
+    diagnostic_functions_str = ["std", "mean",
+                                #"kurtosis", "skew",
+                                "ptp", "FFT power"]
 
     # Compute diagnostics, resulting in a single value per diagnostic for each subintegration/channel
     cleaner_log.debug("computing diagnostic values for each subintegration and channel")
@@ -235,6 +413,11 @@ def comprehensive_stats(data, cthresh=5, sthresh=5):
         scaled_diagnostics.append(np.max((chan_scaled, subint_scaled), axis=0))
 
     cleaner_log.debug("reducing diagnostics to median values")
+    # for i, j, k in np.ndindex(np.shape(scaled_diagnostics)):
+    #     if scaled_diagnostics[i][j][k] > 1:
+    #         print(f"test {diagnostic_functions_str[i]} failed for sub/chan ({j}, {k})")
+    #         print(f"   score = {scaled_diagnostics[i][j][k]} (should be < 1)")
+
     test_results = np.median(scaled_diagnostics, axis=0)  # we could be more extreme and take the min/max
     test_results[~np.isfinite(test_results)] = 10
 
