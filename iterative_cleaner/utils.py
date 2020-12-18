@@ -4,6 +4,7 @@ import logging
 import numpy as np
 from scipy.optimize import least_squares
 
+
 utils_log = logging.getLogger('iterative_cleaner.utils')
 
 
@@ -99,6 +100,7 @@ def update_weights(weights, test_results):
     """
     updated_weights = np.copy(weights)
     for (isub, ichan) in np.argwhere(test_results >= 1):
+        # utils_log.debug(f"subint {isub}, channel {ichan} failed tests")
         updated_weights[isub, ichan] = 0.0
 
     return updated_weights
@@ -108,7 +110,7 @@ def update_archive_weights(archive, weights):
     """Update the weights in an archive (in place!)"""
     for isub, ichan in np.ndindex(weights.shape):
         integration = archive.get_Integration(isub)
-        integration.set_weight(ichan, int(weights[isub, ichan]))
+        integration.set_weight(ichan, float(weights[isub, ichan]))
 
 
 def channel_scaler(array2d):
@@ -152,12 +154,20 @@ def find_bad_parts(weights, bad_subint_frac=1, bad_chan_frac=1):
     subint_weights = weights.mean(axis=1)
     n_bad_subints = len(np.argwhere(subint_weights <= 1 - bad_subint_frac))
     utils_log.info(f"Number of removed subints: {n_bad_subints}")
+    utils_log.info(
+        f"subints flagged: "
+        f"{np.where(subint_weights <= 1 - bad_subint_frac)[0]}"
+    )
     updated_weights[subint_weights <= 1 - bad_subint_frac, :] = 0
 
     # check for largely corrupted channels
     channel_weights = weights.mean(axis=0)
     n_bad_channels = len(np.argwhere(channel_weights <= 1 - bad_chan_frac))
     utils_log.info(f"Number of removed channels: {n_bad_channels}")
+    utils_log.info(
+        f"channels flagged: "
+        f"{np.where(channel_weights <= 1 - bad_chan_frac)[0]}"
+    )
     updated_weights[:, channel_weights <= 1 - bad_chan_frac] = 0
 
     return updated_weights
