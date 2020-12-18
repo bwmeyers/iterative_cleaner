@@ -17,21 +17,21 @@ logger = logging.getLogger('iterative_cleaner')
 logger.setLevel(logging.DEBUG)
 
 # create file handler which logs even debug messages
-fh = logging.FileHandler('{0}/iterative_cleaner_{1}.log'.format(
-    os.getcwd(), datetime.datetime.now(datetime.timezone.utc).strftime("%d%m%Y%H%M%S")))
-fh.setLevel(logging.DEBUG)
+# fh = logging.FileHandler('{0}/iterative_cleaner_{1}.log'.format(
+#     os.getcwd(), datetime.datetime.now(datetime.timezone.utc).strftime("%d%m%Y%H%M%S")))
+# fh.setLevel(logging.DEBUG)
 
 # create console handler with a higher log level
 ch = logging.StreamHandler()
-ch.setLevel(logging.INFO)
+ch.setLevel(logging.DEBUG)
 
 # create formatter and add it to the handlers
 formatter = logging.Formatter('[%(levelname)7s - %(asctime)s] - %(name)s: %(message)s')
-fh.setFormatter(formatter)
+# fh.setFormatter(formatter)
 ch.setFormatter(formatter)
 
 # add the handlers to the logger
-logger.addHandler(fh)
+# logger.addHandler(fh)
 logger.addHandler(ch)
 
 
@@ -48,9 +48,9 @@ if __name__ == "__main__":
     parser.add_argument('-s', '--subintthresh', type=float, default=5, metavar='subint_threshold',
                         help='The threshold (in number of sigmas) a profile needs to stand out compared '
                              'to others in the same subint for it to be removed.')
-    parser.add_argument('--bad_chan_frac', type=float, default=1,
+    parser.add_argument('--bad_chan_frac', type=float, default=0.8,
                         help='Fraction of subints that needs to be removed in order to remove the whole channel.')
-    parser.add_argument('--bad_subint_frac', type=float, default=1,
+    parser.add_argument('--bad_subint_frac', type=float, default=0.8,
                         help='Fraction of channels that needs to be removed in order to remove the whole subint.')
     parser.add_argument('-o', '--onpulse', nargs=2, type=float, default=None, metavar=('pulse_start', 'pulse_end'),
                         help='Defines the on-pulse region (if desired)')
@@ -80,9 +80,17 @@ if __name__ == "__main__":
     for arch in arch_list:
         #output = "{0}_clean.ar".format(arch.rsplit('.', 1)[0])
         #clean(arch, output=output, **kwargs)
-        itercleaner = IterativeCleaner(arch, max_iter=3,
+        itercleaner = IterativeCleaner(arch, templatefile=args.template,
+                                       max_iter=args.max_iter,
+                                       channelthresh=args.chanthresh,
+                                       subintthresh=args.subintthresh,
+                                       bad_channel_frac=args.bad_chan_frac,
+                                       bad_subint_frac=args.bad_subint_frac,
                                        known_bad_subints=args.w,
                                        known_bad_channels=args.z)
-        itercleaner.clean_without_template()
+        if args.template is not None:
+            itercleaner.clean_with_template()
+        else:
+            itercleaner.clean_without_template()
 
 
